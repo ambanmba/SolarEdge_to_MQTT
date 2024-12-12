@@ -1,0 +1,96 @@
+// Paste this code to Node red function node.
+
+function formatNumber(number) {
+    return Number(number.toFixed(2));
+}
+
+// Process all SolarEdge inverter and meter data
+if (!msg.payload || !msg.payload.meters || !msg.payload.meters.Meter1) {
+    node.status({
+        fill: "red",
+        shape: "ring",
+        text: "No valid data"
+    });
+    msg.payload.processed = {
+        connection_status: "disconnected",
+        timestamp: msg.payload.monitoring ? msg.payload.monitoring.last_successful_read : null,
+        connection_attempts: msg.payload.monitoring ? msg.payload.monitoring.connection_attempts : 0,
+        consecutive_failures: msg.payload.monitoring ? msg.payload.monitoring.consecutive_failures : 0
+    };
+    return msg;
+}
+
+try {
+    const meter = msg.payload.meters.Meter1;
+    const inverter = msg.payload;
+    
+    // Calculate all scaling factors
+    const scales = {
+        current: Math.pow(10, meter.current_scale),
+        voltage: Math.pow(10, meter.voltage_scale),
+        power: Math.pow(10, meter.power_scale),
+        powerApparent: Math.pow(10, meter.power_apparent_scale),
+        powerReactive: Math.pow(10, meter.power_reactive_scale),
+        powerFactor: Math.pow(10, meter.power_factor_scale),
+        energyActive: Math.pow(10, meter.energy_active_scale),
+        frequency: Math.pow(10, meter.frequency_scale),
+        dc: {
+            current: Math.pow(10, inverter.current_dc_scale),
+            voltage: Math.pow(10, inverter.voltage_dc_scale),
+            power: Math.pow(10, inverter.power_dc_scale)
+        },
+        temperature: Math.pow(10, inverter.temperature_scale)
+    };
+
+    // Process meter currents
+    const currents = {
+        total: formatNumber(meter.current * scales.current),
+        l1: formatNumber(meter.l1_current * scales.current),
+        l2: formatNumber(meter.l2_current * scales.current),
+        l3: formatNumber(meter.l3_current * scales.current)
+    };
+    currents.min = formatNumber(Math.min(currents.l1, currents.l2, currents.l3));
+
+    // Update node status with currents and total apparent power
+    const totalApparentPower = formatNumber((meter.power_apparent * Math.pow(10, meter.power_apparent_scale)) / 1000).toFixed(1);
+
+    // Status info
+    node.status({
+        fill: totalApparentPower < 0 ? "blue" : "green",
+        shape: totalApparentPower < 0 ? "ring" : "dot",
+        text: `L1:${currents.l1}, L2:${currents.l2}, L3:${currents.l3}A | ${totalApparentPower}kW`
+    });
+
+    // Process and format all other values
+    msg.payload.processed = {
+        connection_status: "connected",
+        timestamp: inverter.monitoring.last_successful_read,
+        currents: currents,
+        voltages: {
+            l1n: formatNumber(meter.l1n_voltage * scales.voltage),
+            l2n: formatNumber(meter.l2n_voltage * scales.voltage),
+            l3n: formatNumber(meter.l3n_voltage * scales.voltage)
+        },
+        power: {
+            total: formatNumber(meter.power * scales.power),
+            l1: formatNumber(meter.l1_power * scales.power),
+            l2: formatNumber(meter.l2_power * scales.power),
+            l3: formatNumber(meter.l3_power * scales.power)
+        },
+        dc: {
+            current: formatNumber(inverter.current_dc * scales.dc.current),
+            voltage: formatNumber(inverter.voltage_dc * scales.dc.voltage),
+            power: formatNumber(inverter.power_dc * scales.dc.power)
+        }
+    };
+
+} catch (error) {
+    node.status({
+        fill: "red",
+        shape: "ring",
+        text: "Error: " + error.message
+    });
+    node.error("Processing error: " + error.message, msg);
+}
+
+return msg;
