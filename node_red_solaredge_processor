@@ -1,7 +1,7 @@
 // Paste this code to Node red function node.
 
 function formatNumber(number) {
-    return Number(number.toFixed(2));
+    return Number(number.toFixed(1));
 }
 
 // Process all SolarEdge inverter and meter data
@@ -23,7 +23,7 @@ if (!msg.payload || !msg.payload.meters || !msg.payload.meters.Meter1) {
 try {
     const meter = msg.payload.meters.Meter1;
     const inverter = msg.payload;
-    
+
     // Calculate all scaling factors
     const scales = {
         current: Math.pow(10, meter.current_scale),
@@ -42,45 +42,109 @@ try {
         temperature: Math.pow(10, inverter.temperature_scale)
     };
 
-    // Process meter currents
-    const currents = {
-        total: formatNumber(meter.current * scales.current),
-        l1: formatNumber(meter.l1_current * scales.current),
-        l2: formatNumber(meter.l2_current * scales.current),
-        l3: formatNumber(meter.l3_current * scales.current)
+    // Calculate inverter values
+    const solar = {
+        total_power: formatNumber(inverter.power_ac),
+        power_per_phase: formatNumber(inverter.power_ac / 3),
+        power_factor: formatNumber(inverter.power_factor * scales.powerFactor),
+        apparent_power: formatNumber(inverter.power_apparent),
+        reactive_power: formatNumber(inverter.power_reactive * scales.powerReactive),
+        dc: {
+            current: formatNumber(inverter.current_dc * scales.dc.current),
+            voltage: formatNumber(inverter.voltage_dc * scales.dc.voltage),
+            power: formatNumber(inverter.power_dc)
+        },
+        efficiency: formatNumber((inverter.power_ac / inverter.power_dc) * 100),
+        temperature: formatNumber(inverter.temperature * scales.temperature)
     };
-    currents.min = formatNumber(Math.min(currents.l1, currents.l2, currents.l3));
 
-    // Update node status with currents and total apparent power
-    const totalApparentPower = formatNumber((meter.power_apparent * Math.pow(10, meter.power_apparent_scale)) / 1000).toFixed(1);
-
-    // Status info
-    node.status({
-        fill: totalApparentPower < 0 ? "blue" : "green",
-        shape: totalApparentPower < 0 ? "ring" : "dot",
-        text: `L1:${currents.l1}, L2:${currents.l2}, L3:${currents.l3}A | ${totalApparentPower}kW`
-    });
-
-    // Process and format all other values
-    msg.payload.processed = {
-        connection_status: "connected",
-        timestamp: inverter.monitoring.last_successful_read,
-        currents: currents,
+    // Process meter currents and voltages
+    const grid = {
+        currents: {
+            total: formatNumber(meter.current * scales.current),
+            l1: formatNumber(meter.l1_current * scales.current),
+            l2: formatNumber(meter.l2_current * scales.current),
+            l3: formatNumber(meter.l3_current * scales.current)
+        },
         voltages: {
             l1n: formatNumber(meter.l1n_voltage * scales.voltage),
             l2n: formatNumber(meter.l2n_voltage * scales.voltage),
             l3n: formatNumber(meter.l3n_voltage * scales.voltage)
         },
         power: {
-            total: formatNumber(meter.power * scales.power),
-            l1: formatNumber(meter.l1_power * scales.power),
-            l2: formatNumber(meter.l2_power * scales.power),
-            l3: formatNumber(meter.l3_power * scales.power)
+            total: formatNumber(meter.power),
+            l1: formatNumber(meter.l1_power),
+            l2: formatNumber(meter.l2_power),
+            l3: formatNumber(meter.l3_power)
         },
-        dc: {
-            current: formatNumber(inverter.current_dc * scales.dc.current),
-            voltage: formatNumber(inverter.voltage_dc * scales.dc.voltage),
-            power: formatNumber(inverter.power_dc * scales.dc.power)
+        apparent_power: {
+            total: formatNumber(meter.power_apparent),
+            l1: formatNumber(meter.l1_power_apparent),
+            l2: formatNumber(meter.l2_power_apparent),
+            l3: formatNumber(meter.l3_power_apparent)
+        },
+        reactive_power: {
+            total: formatNumber(meter.power_reactive * scales.powerReactive),
+            l1: formatNumber(meter.l1_power_reactive * scales.powerReactive),
+            l2: formatNumber(meter.l2_power_reactive * scales.powerReactive),
+            l3: formatNumber(meter.l3_power_reactive * scales.powerReactive)
+        },
+        power_factor: {
+            total: formatNumber(meter.power_factor * scales.powerFactor),
+            l1: formatNumber(meter.l1_power_factor * scales.powerFactor),
+            l2: formatNumber(meter.l2_power_factor * scales.powerFactor),
+            l3: formatNumber(meter.l3_power_factor * scales.powerFactor)
+        },
+        energy: {
+            export: {
+                total: formatNumber(meter.export_energy_active * scales.energyActive),
+                l1: formatNumber(meter.l1_export_energy_active * scales.energyActive),
+                l2: formatNumber(meter.l2_export_energy_active * scales.energyActive),
+                l3: formatNumber(meter.l3_export_energy_active * scales.energyActive)
+            },
+            import: {
+                total: formatNumber(meter.import_energy_active * scales.energyActive),
+                l1: formatNumber(meter.l1_import_energy_active * scales.energyActive),
+                l2: formatNumber(meter.l2_import_energy_active * scales.energyActive),
+                l3: formatNumber(meter.l3_import_energy_active * scales.energyActive)
+            }
+        }
+    };
+
+    // Calculate house consumption
+    const consumption = {
+        total: formatNumber(solar.total_power - grid.power.total),
+        l1: formatNumber(solar.power_per_phase - grid.power.l1),
+        l2: formatNumber(solar.power_per_phase - grid.power.l2),
+        l3: formatNumber(solar.power_per_phase - grid.power.l3)
+    };
+
+    // Calculate percentages for visualization
+    const percentages = {
+        solar_used: formatNumber((consumption.total / solar.total_power) * 100),
+        solar_exported: formatNumber((grid.power.total / solar.total_power) * 100)
+    };
+
+    // Set node status with key metrics
+    const statusText = `Load:${consumption.total}kW Solar:${solar.total_power}kW Export:${grid.power.total}kW`;
+    node.status({
+        fill: "green",
+        shape: consumption.total > solar.total_power ? "ring" : "dot",
+        text: statusText
+    });
+
+    // Create the processed output
+    msg.payload.processed = {
+        connection_status: "connected",
+        timestamp: inverter.monitoring.last_successful_read,
+        solar: solar,
+        grid: grid,
+        consumption: consumption,
+        percentages: percentages,
+        system_status: {
+            inverter_status: inverter.status,
+            temperature: solar.temperature,
+            frequency: formatNumber(meter.frequency * scales.frequency)
         }
     };
 
