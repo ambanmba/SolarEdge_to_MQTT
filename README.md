@@ -2,6 +2,10 @@
 
 A Python script to monitor SolarEdge inverters via Modbus TCP and publish the data to an MQTT broker. This tool allows for real-time monitoring of your SolarEdge inverter's performance metrics.
 
+Also added is a Node Red function node code to process the incoming MQTT data and use it for other purposes.
+
+![Node_red_flow](node_red_flow.png)
+
 ## Features
 
 - Modbus TCP connection to SolarEdge inverters
