@@ -49,24 +49,23 @@ try {
     };
     currents.min = formatNumber(Math.min(currents.l1, currents.l2, currents.l3));
 
-    // Calculate power values
-    const solarPower = formatNumber(inverter.power_dc);
+    // Calculate power values with correct scaling
+    const solarPower = formatNumber(inverter.power_dc * scales.dc.power);
     const gridPower = formatNumber(meter.power * scales.power);
 
-    // Calculate household consumption based on grid power direction
-    let householdConsumption;
-    if (gridPower > 0) {
-        // Importing from grid (positive value)
-        householdConsumption = formatNumber(solarPower - gridPower);
-    } else {
-        // Exporting to grid (negative value)
-        householdConsumption = formatNumber(solarPower + Math.abs(gridPower));
-    }
+    // Calculate household consumption
+    // If gridPower is positive, we're exporting (selling) to grid
+    // If gridPower is negative, we're importing (buying) from grid
+    const householdConsumption = formatNumber(solarPower - gridPower);  // Changed to subtract gridPower
+
+    // Calculate inverter efficiency
+    const acPower = formatNumber(inverter.power_ac * Math.pow(10, inverter.power_ac_scale));
+    const inverterEfficiency = formatNumber((acPower / solarPower) * 100);
 
     // Status info - show key metrics
     const statusText = `Solar: ${solarPower}W | Grid: ${gridPower}W | Home: ${householdConsumption}W`;
     node.status({
-        fill: gridPower < 0 ? "green" : "blue",  // Green when exporting, blue when importing
+        fill: gridPower > 0 ? "green" : "blue",  // Green when exporting (positive), blue when importing (negative)
         shape: "dot",
         text: statusText
     });
@@ -90,17 +89,59 @@ try {
         dc: {
             current: formatNumber(inverter.current_dc * scales.dc.current),
             voltage: formatNumber(inverter.voltage_dc * scales.dc.voltage),
-            power: formatNumber(inverter.power_dc * scales.dc.power)
+            power: solarPower
         },
         energy: {
             exported: formatNumber(meter.export_energy_active * scales.energyActive),
-            imported: formatNumber(meter.import_energy_active * scales.energyActive)
+            imported: formatNumber(meter.import_energy_active * scales.energyActive),
+            lifetime_total: inverter.energy_total,
+            per_phase: {
+                l1: {
+                    exported: formatNumber(meter.l1_export_energy_active * scales.energyActive),
+                    imported: formatNumber(meter.l1_import_energy_active * scales.energyActive)
+                },
+                l2: {
+                    exported: formatNumber(meter.l2_export_energy_active * scales.energyActive),
+                    imported: formatNumber(meter.l2_import_energy_active * scales.energyActive)
+                },
+                l3: {
+                    exported: formatNumber(meter.l3_export_energy_active * scales.energyActive),
+                    imported: formatNumber(meter.l3_import_energy_active * scales.energyActive)
+                }
+            }
+        },
+        power_quality: {
+            frequency: formatNumber(inverter.frequency * scales.frequency),
+            power_factor: {
+                total: formatNumber(meter.power_factor * scales.powerFactor),
+                l1: formatNumber(meter.l1_power_factor * scales.powerFactor),
+                l2: formatNumber(meter.l2_power_factor * scales.powerFactor),
+                l3: formatNumber(meter.l3_power_factor * scales.powerFactor)
+            },
+            apparent_power: {
+                total: formatNumber(meter.power_apparent * scales.powerApparent),
+                l1: formatNumber(meter.l1_power_apparent * scales.powerApparent),
+                l2: formatNumber(meter.l2_power_apparent * scales.powerApparent),
+                l3: formatNumber(meter.l3_power_apparent * scales.powerApparent)
+            },
+            reactive_power: {
+                total: formatNumber(meter.power_reactive * scales.powerReactive),
+                l1: formatNumber(meter.l1_power_reactive * scales.powerReactive),
+                l2: formatNumber(meter.l2_power_reactive * scales.powerReactive),
+                l3: formatNumber(meter.l3_power_reactive * scales.powerReactive)
+            }
+        },
+        inverter_status: {
+            temperature: formatNumber(inverter.temperature * scales.temperature),
+            status_code: inverter.status,
+            efficiency: inverterEfficiency,
+            ac_power: acPower
         },
         calculated: {
             solar_production: solarPower,
             grid_power: gridPower,
             household_consumption: householdConsumption,
-            grid_direction: gridPower < 0 ? "exporting" : "importing"
+            grid_direction: gridPower > 0 ? "exporting" : "importing"  // Positive means exporting, negative means importing
         }
     };
 
