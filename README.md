@@ -4,6 +4,8 @@ A Python script to monitor SolarEdge inverters via Modbus TCP and publish the da
 
 Also added is a **Node Red** function node code to process the incoming MQTT data and use it for other purposes.
 
+Note to users from Slovenija: Prikaz trenutne porabe in obračunskega bloga omrežnine ter priprava opozorila o morebitnem preseganju dogovorjene moči.
+
 ![Node_red_flow](node_red_flow.png)
 
 ## Features
@@ -16,6 +18,7 @@ Also added is a **Node Red** function node code to process the incoming MQTT dat
 - Battery and meter data collection (if available)
 - Connection monitoring and automatic reconnection
 - JSON output option
+- For Slovenija: Pregled skladnosti dogovorjene obračunske moči zaradi omrežnine
 
 ## Prerequisites
 
