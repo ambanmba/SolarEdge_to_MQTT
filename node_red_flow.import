@@ -1,0 +1,232 @@
+[
+    {
+        "id": "b27fd3b817472bf8",
+        "type": "mqtt in",
+        "z": "01c946c43839e820",
+        "name": "",
+        "topic": "solaredge",
+        "qos": "0",
+        "datatype": "json",
+        "broker": "afb9540e.133eb8",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 100,
+        "y": 100,
+        "wires": [
+            [
+                "3b6d5c29d9442bec"
+            ]
+        ]
+    },
+    {
+        "id": "3b6d5c29d9442bec",
+        "type": "function",
+        "z": "01c946c43839e820",
+        "name": "function 23",
+        "func": "function formatNumber(number) {\n    return Number(number.toFixed(2));\n}\n\n// Process all SolarEdge inverter and meter data\nif (!msg.payload || !msg.payload.meters || !msg.payload.meters.Meter1) {\n    node.status({\n        fill: \"red\",\n        shape: \"ring\",\n        text: \"No valid data\"\n    });\n    msg.payload.processed = {\n        connection_status: \"disconnected\",\n        timestamp: msg.payload.monitoring ? msg.payload.monitoring.last_successful_read : null,\n        connection_attempts: msg.payload.monitoring ? msg.payload.monitoring.connection_attempts : 0,\n        consecutive_failures: msg.payload.monitoring ? msg.payload.monitoring.consecutive_failures : 0\n    };\n    return msg;\n}\n\ntry {\n    const meter = msg.payload.meters.Meter1;\n    const inverter = msg.payload;\n\n    // Calculate all scaling factors\n    const scales = {\n        current: Math.pow(10, meter.current_scale),\n        voltage: Math.pow(10, meter.voltage_scale),\n        power: Math.pow(10, meter.power_scale),\n        powerApparent: Math.pow(10, meter.power_apparent_scale),\n        powerReactive: Math.pow(10, meter.power_reactive_scale),\n        powerFactor: Math.pow(10, meter.power_factor_scale),\n        energyActive: Math.pow(10, meter.energy_active_scale),\n        frequency: Math.pow(10, meter.frequency_scale),\n        dc: {\n            current: Math.pow(10, inverter.current_dc_scale),\n            voltage: Math.pow(10, inverter.voltage_dc_scale),\n            power: Math.pow(10, inverter.power_dc_scale)\n        },\n        temperature: Math.pow(10, inverter.temperature_scale)\n    };\n\n    // Process meter currents\n    const currents = {\n        total: formatNumber(meter.current * scales.current),\n        l1: formatNumber(meter.l1_current * scales.current),\n        l2: formatNumber(meter.l2_current * scales.current),\n        l3: formatNumber(meter.l3_current * scales.current)\n    };\n    currents.min = formatNumber(Math.min(currents.l1, currents.l2, currents.l3));\n\n    // Calculate power values with correct scaling\n    const solarPower = formatNumber(inverter.power_dc * scales.dc.power);\n    const gridPower = formatNumber(meter.power * scales.power);\n\n    // Calculate household consumption\n    // If gridPower is positive, we're exporting (selling) to grid\n    // If gridPower is negative, we're importing (buying) from grid\n    const householdConsumption = formatNumber(solarPower - gridPower);  // Changed to subtract gridPower\n\n    // Calculate inverter efficiency\n    const acPower = formatNumber(inverter.power_ac * Math.pow(10, inverter.power_ac_scale));\n    const inverterEfficiency = formatNumber((acPower / solarPower) * 100);\n\n    // Status info - show key metrics\n    const statusText = `Solar: ${solarPower}W | Grid: ${gridPower}W | Home: ${householdConsumption}W`;\n    node.status({\n        fill: gridPower > 0 ? \"green\" : \"blue\",  // Green when exporting (positive), blue when importing (negative)\n        shape: \"dot\",\n        text: statusText\n    });\n\n    // Process and format all other values\n    msg.payload.processed = {\n        connection_status: \"connected\",\n        timestamp: inverter.monitoring.last_successful_read,\n        currents: currents,\n        voltages: {\n            l1n: formatNumber(meter.l1n_voltage * scales.voltage),\n            l2n: formatNumber(meter.l2n_voltage * scales.voltage),\n            l3n: formatNumber(meter.l3n_voltage * scales.voltage)\n        },\n        power: {\n            total: formatNumber(meter.power * scales.power),\n            l1: formatNumber(meter.l1_power * scales.power),\n            l2: formatNumber(meter.l2_power * scales.power),\n            l3: formatNumber(meter.l3_power * scales.power)\n        },\n        dc: {\n            current: formatNumber(inverter.current_dc * scales.dc.current),\n            voltage: formatNumber(inverter.voltage_dc * scales.dc.voltage),\n            power: solarPower\n        },\n        energy: {\n            exported: formatNumber(meter.export_energy_active * scales.energyActive),\n            imported: formatNumber(meter.import_energy_active * scales.energyActive),\n            lifetime_total: inverter.energy_total,\n            per_phase: {\n                l1: {\n                    exported: formatNumber(meter.l1_export_energy_active * scales.energyActive),\n                    imported: formatNumber(meter.l1_import_energy_active * scales.energyActive)\n                },\n                l2: {\n                    exported: formatNumber(meter.l2_export_energy_active * scales.energyActive),\n                    imported: formatNumber(meter.l2_import_energy_active * scales.energyActive)\n                },\n                l3: {\n                    exported: formatNumber(meter.l3_export_energy_active * scales.energyActive),\n                    imported: formatNumber(meter.l3_import_energy_active * scales.energyActive)\n                }\n            }\n        },\n        power_quality: {\n            frequency: formatNumber(inverter.frequency * scales.frequency),\n            power_factor: {\n                total: formatNumber(meter.power_factor * scales.powerFactor),\n                l1: formatNumber(meter.l1_power_factor * scales.powerFactor),\n                l2: formatNumber(meter.l2_power_factor * scales.powerFactor),\n                l3: formatNumber(meter.l3_power_factor * scales.powerFactor)\n            },\n            apparent_power: {\n                total: formatNumber(meter.power_apparent * scales.powerApparent),\n                l1: formatNumber(meter.l1_power_apparent * scales.powerApparent),\n                l2: formatNumber(meter.l2_power_apparent * scales.powerApparent),\n                l3: formatNumber(meter.l3_power_apparent * scales.powerApparent)\n            },\n            reactive_power: {\n                total: formatNumber(meter.power_reactive * scales.powerReactive),\n                l1: formatNumber(meter.l1_power_reactive * scales.powerReactive),\n                l2: formatNumber(meter.l2_power_reactive * scales.powerReactive),\n                l3: formatNumber(meter.l3_power_reactive * scales.powerReactive)\n            }\n        },\n        inverter_status: {\n            temperature: formatNumber(inverter.temperature * scales.temperature),\n            status_code: inverter.status,\n            efficiency: inverterEfficiency,\n            ac_power: acPower\n        },\n        calculated: {\n            solar_production: solarPower,\n            grid_power: gridPower,\n            household_consumption: householdConsumption,\n            grid_direction: gridPower > 0 ? \"exporting\" : \"importing\"  // Positive means exporting, negative means importing\n        }\n    };\n\n} catch (error) {\n    node.status({\n        fill: \"red\",\n        shape: \"ring\",\n        text: \"Error: \" + error.message\n    });\n    node.error(\"Processing error: \" + error.message, msg);\n}\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 290,
+        "y": 100,
+        "wires": [
+            [
+                "5813fb0523ad9ef6",
+                "25b5cb97db709860"
+            ]
+        ]
+    },
+    {
+        "id": "808638f825b78acc",
+        "type": "debug",
+        "z": "01c946c43839e820",
+        "name": "debug 38",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 580,
+        "y": 140,
+        "wires": []
+    },
+    {
+        "id": "5813fb0523ad9ef6",
+        "type": "change",
+        "z": "01c946c43839e820",
+        "name": "move",
+        "rules": [
+            {
+                "t": "move",
+                "p": "payload.processed",
+                "pt": "msg",
+                "to": "payload",
+                "tot": "msg"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 470,
+        "y": 100,
+        "wires": [
+            [
+                "808638f825b78acc",
+                "8b1540acd9af360b",
+                "b542ce69f853f01e"
+            ]
+        ]
+    },
+    {
+        "id": "25b5cb97db709860",
+        "type": "debug",
+        "z": "01c946c43839e820",
+        "name": "debug 41",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 480,
+        "y": 60,
+        "wires": []
+    },
+    {
+        "id": "b542ce69f853f01e",
+        "type": "function",
+        "z": "01c946c43839e820",
+        "name": "Omrežnina bloki",
+        "func": "// Node-RED Function Node\nlet getTierHighSeasonWeekday = function (hour) {\n    if (hour <= 5) return 3;\n    if (hour === 6) return 2;\n    if (hour >= 7 && hour <= 13) return 1;\n    if (hour >= 14 && hour <= 15) return 2;\n    if (hour >= 16 && hour <= 19) return 1;\n    if (hour >= 20 && hour <= 21) return 2;\n    return 3; // 22-23\n}\n\nlet getTierHighSeasonWeekend = function (hour) {\n    if (hour <= 5) return 4;\n    if (hour === 6) return 3;\n    if (hour >= 7 && hour <= 13) return 2;\n    if (hour >= 14 && hour <= 15) return 3;\n    if (hour >= 16 && hour <= 19) return 2;\n    if (hour >= 20 && hour <= 21) return 3;\n    return 4; // 22-23\n}\n\nlet getTierLowSeasonWeekday = function (hour) {\n    if (hour <= 5) return 4;\n    if (hour === 6) return 3;\n    if (hour >= 7 && hour <= 13) return 2;\n    if (hour >= 14 && hour <= 15) return 3;\n    if (hour >= 16 && hour <= 19) return 2;\n    if (hour >= 20 && hour <= 21) return 3;\n    return 4; // 22-23\n}\n\nlet getTierLowSeasonWeekend = function (hour) {\n    if (hour <= 5) return 5;\n    if (hour === 6) return 4;\n    if (hour >= 7 && hour <= 13) return 3;\n    if (hour >= 14 && hour <= 15) return 4;\n    if (hour >= 16 && hour <= 19) return 3;\n    if (hour >= 20 && hour <= 21) return 4;\n    return 5; // 22-23\n}\n\n// Main function\nfunction processMessage(msg) {\n    try {\n        // Extract power consumption (convert negative grid power to positive consumption)\n        const gridPower = msg.payload.calculated.grid_power;\n        const consumption = gridPower < 0 ? Math.abs(gridPower) : 0; // Only consider consumption when importing\n\n        // Extract current datetime from the timestamp\n        const now = new Date(msg.payload.timestamp);\n        const currentHour = now.getHours();\n        const currentMonth = now.getMonth() + 1; // JavaScript months are 0-based\n        const isWeekend = [0, 6].includes(now.getDay()); // 0 is Sunday, 6 is Saturday\n\n        // Determine season (high season: November through February)\n        const isHighSeason = [11, 12, 1, 2].includes(currentMonth);\n\n        // Determine the current tier based on time and day type\n        let currentTier;\n        if (isHighSeason) {\n            if (isWeekend) {\n                currentTier = getTierHighSeasonWeekend(currentHour);\n            } else {\n                currentTier = getTierHighSeasonWeekday(currentHour);\n            }\n        } else {\n            if (isWeekend) {\n                currentTier = getTierLowSeasonWeekend(currentHour);\n            } else {\n                currentTier = getTierLowSeasonWeekday(currentHour);\n            }\n        }\n\n        // Determine power limit based on tier\n        const powerLimit = (currentTier <= 2) ? 6500 : 13000;\n        const percentageUsed = (consumption / powerLimit) * 100;\n\n        // Update node status\n        node.status({\n            fill: percentageUsed > 90 ? \"red\" : percentageUsed > 75 ? \"yellow\" : \"green\",\n            shape: \"dot\",\n            text: `T${currentTier} ${powerLimit}W ${percentageUsed.toFixed(0)}%`\n        });\n\n        // If we're exporting power (positive grid_power), we're safe\n        if (gridPower >= 0) {\n            const mainMsg = {\n                ...msg,\n                payload: {\n                    status: \"normal\",\n                    message: \"Exporting power to grid\",\n                    details: {\n                        currentTier: currentTier,\n                        powerLimit: powerLimit,\n                        isHighSeason: isHighSeason,\n                        isWeekend: isWeekend,\n                        consumption: 0,\n                        gridPower: gridPower,\n                        percentageUsed: 0\n                    }\n                }\n            };\n\n            const telegramMsg = {\n                payload: {\n                    content: \"✅ Exporting power to grid\",\n                    type: \"message\",\n                    chatId: -4715662231\n                }\n            };\n\n            return [mainMsg, telegramMsg];\n        }\n\n        // Prepare status message for consumption\n        let status = \"normal\";\n        let message = \"\";\n        let telegramContent = \"\";\n\n        if (consumption > powerLimit) {\n            status = \"critical\";\n            message = `WARNING: Current consumption (${consumption}W) exceeds limit for tier ${currentTier} (${powerLimit}W)`;\n            telegramContent = `⚠️ CRITICAL: Power usage ${consumption}W exceeds ${powerLimit}W limit (Tier ${currentTier})!`;\n        } else if (percentageUsed > 90) {\n            status = \"warning\";\n            message = `CAUTION: Current consumption (${consumption}W) is approaching limit (${powerLimit}W)`;\n            telegramContent = `⚠️ WARNING: Power usage ${consumption}W (${percentageUsed.toFixed(0)}%) approaching limit ${powerLimit}W (Tier ${currentTier})`;\n        } else {\n            status = \"normal\";\n            message = `OK: Current consumption (${consumption}W) within limits (${powerLimit}W)`;\n            telegramContent = `✅ Power usage normal: ${consumption}W (${percentageUsed.toFixed(0)}%) of ${powerLimit}W (Tier ${currentTier})`;\n        }\n\n        // Prepare main output message\n        const mainMsg = {\n            ...msg,\n            payload: {\n                status: status,\n                message: message,\n                details: {\n                    currentTier: currentTier,\n                    powerLimit: powerLimit,\n                    isHighSeason: isHighSeason,\n                    isWeekend: isWeekend,\n                    consumption: consumption,\n                    gridPower: gridPower,\n                    percentageUsed: percentageUsed.toFixed(0)\n                }\n            }\n        };\n\n        // Prepare Telegram message\n        const telegramMsg = {\n            payload: {\n                content: telegramContent,\n                type: \"message\",\n                chatId: -4715662231\n            },\n            percentage: Math.round(percentageUsed)\n        };\n\n        return [mainMsg, telegramMsg];\n\n    } catch (error) {\n        // Update node status for error\n        node.status({ fill: \"red\", shape: \"ring\", text: \"Error\" });\n\n        const mainMsg = {\n            ...msg,\n            payload: {\n                status: \"error\",\n                message: \"Error processing data: \" + error.message,\n                error: error\n            }\n        };\n\n        const telegramMsg = {\n            payload: {\n                content: \"⚠️ Error monitoring power consumption\",\n                type: \"message\",\n                chatId: -4715662231\n            }\n        };\n\n        return [mainMsg, telegramMsg];\n    }\n}\n\n// This is the actual Node-RED function entry point\nreturn processMessage(msg);",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 800,
+        "y": 100,
+        "wires": [
+            [
+                "2ca0153ba80be5e1"
+            ],
+            [
+                "c6005da1e752a238",
+                "240bb992e415e1a7"
+            ]
+        ]
+    },
+    {
+        "id": "2ca0153ba80be5e1",
+        "type": "debug",
+        "z": "01c946c43839e820",
+        "name": "debug 4",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1000,
+        "y": 60,
+        "wires": []
+    },
+    {
+        "id": "c6005da1e752a238",
+        "type": "debug",
+        "z": "01c946c43839e820",
+        "name": "debug 8",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1000,
+        "y": 100,
+        "wires": []
+    },
+    {
+        "id": "e416ae1726347308",
+        "type": "link out",
+        "z": "01c946c43839e820",
+        "name": "link out 1",
+        "mode": "link",
+        "links": [
+            "7826cb5546b3f25a"
+        ],
+        "x": 1085,
+        "y": 140,
+        "wires": []
+    },
+    {
+        "id": "240bb992e415e1a7",
+        "type": "switch",
+        "z": "01c946c43839e820",
+        "name": "",
+        "property": "percentage",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "gt",
+                "v": "90",
+                "vt": "str"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 1,
+        "x": 990,
+        "y": 140,
+        "wires": [
+            [
+                "e416ae1726347308"
+            ]
+        ]
+    },
+    {
+        "id": "afb9540e.133eb8",
+        "type": "mqtt-broker",
+        "name": "MQTT broker 1883",
+        "broker": "10.0.10.9",
+        "port": "1883",
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": false,
+        "compatmode": false,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willPayload": "",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": ""
+    }
+]
