@@ -111,6 +111,10 @@ class SolarEdgeMonitor:
 
 def publish_to_mqtt_j(mqtt_client, topic, data):
     try:
+        if not mqtt_client.is_connected():
+            logger.warning("MQTT client disconnected, attempting to reconnect")
+            mqtt_client.reconnect()
+            time.sleep(1)  # Brief delay to allow reconnection
         mqtt_client.publish(topic, json.dumps(data))
         logger.debug(f"Successfully published data to MQTT topic: {topic}")
     except Exception as e:
@@ -118,17 +122,18 @@ def publish_to_mqtt_j(mqtt_client, topic, data):
 
 def publish_to_mqtt_f(mqtt_client, base_topic, data):
     try:
+        if not mqtt_client.is_connected():
+            logger.warning("MQTT client disconnected, attempting to reconnect")
+            mqtt_client.reconnect()
+            time.sleep(1)  # Brief delay to allow reconnection
         def publish_nested_dict(prefix, d):
             for key, value in d.items():
                 subtopic = f"{prefix}/{key}"
                 if isinstance(value, dict):
-                    # Recursively handle nested dictionaries (meters, batteries)
                     publish_nested_dict(subtopic, value)
                 else:
-                    # Publish non-dict values
                     mqtt_client.publish(subtopic, str(value))
                     logger.debug(f"Published {subtopic}: {value}")
-
         publish_nested_dict(base_topic, data)
         logger.debug(f"Successfully published all data under MQTT topic: {base_topic}")
     except Exception as e:
@@ -157,14 +162,28 @@ def main():
 
     mqtt_client = None
     if args.mqtt_server:
+        # Define MQTT callbacks
+        def on_connect(client, userdata, flags, rc):
+            if rc == 0:
+                logger.info("Connected to MQTT broker successfully")
+            else:
+                logger.error(f"Failed to connect to MQTT broker, return code {rc}")
+
+        def on_disconnect(client, userdata, rc):
+            if rc != 0:
+                logger.warning(f"Unexpected MQTT disconnection, return code {rc}. Will attempt to reconnect...")
+
         try:
-            mqtt_client = mqtt.Client()
-            mqtt_client.connect(args.mqtt_server, args.mqtt_port)
+            mqtt_client = mqtt.Client(client_id="solaredge_mqtt")
+            mqtt_client.on_connect = on_connect
+            mqtt_client.on_disconnect = on_disconnect
+            mqtt_client.reconnect_delay_set(min_delay=1, max_delay=60)  # Exponential backoff: 1s to 60s
+            mqtt_client.connect(args.mqtt_server, args.mqtt_port, keepalive=60)
             mqtt_client.loop_start()
-            logger.info(f"Connected to MQTT broker at {args.mqtt_server}:{args.mqtt_port}")
+            logger.info(f"Attempting to connect to MQTT broker at {args.mqtt_server}:{args.mqtt_port}")
         except Exception as e:
-            logger.error(f"Failed to connect to MQTT broker: {str(e)}")
-            return
+            logger.error(f"Failed to connect to MQTT broker on startup: {str(e)}")
+            mqtt_client = None
 
     while True:
         try:
@@ -191,6 +210,7 @@ def main():
             logger.error(f"Unexpected error: {str(e)}\n{traceback.format_exc()}")
         
         time.sleep(args.interval)
+
 def print_inverter_data(inverter, values):
     print(f"{inverter}:")
     print("\nRegisters:")
@@ -227,8 +247,6 @@ def print_inverter_data(inverter, values):
     print(f"\tDC Current: {(values['current_dc'] * (10 ** values['current_dc_scale'])):.2f}{inverter.registers['current_dc'][6]}")
     print(f"\tDC Voltage: {(values['voltage_dc'] * (10 ** values['voltage_dc_scale'])):.2f}{inverter.registers['voltage_dc'][6]}")
     print(f"\tDC Power: {(values['power_dc'] * (10 ** values['power_dc_scale'])):.2f}{inverter.registers['power_dc'][6]}")
-
-    pass
 
 if __name__ == "__main__":
     main()
