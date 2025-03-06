@@ -11,8 +11,8 @@ import traceback
 from datetime import datetime
 
 # Configure logging
-DEBUG = True
-DEBUG_LOG = "/mnt/debug.txt"
+DEBUG = False
+DEBUG_LOG = "debug.txt"
 
 def setup_logging():
     logger = logging.getLogger('solaredge_mqtt')
@@ -109,10 +109,28 @@ class SolarEdgeMonitor:
                 logger.error(f"Failed to read inverter data: {error_msg}")
             return None
 
-def publish_to_mqtt(mqtt_client, topic, data):
+def publish_to_mqtt_j(mqtt_client, topic, data):
     try:
         mqtt_client.publish(topic, json.dumps(data))
         logger.debug(f"Successfully published data to MQTT topic: {topic}")
+    except Exception as e:
+        logger.error(f"Failed to publish to MQTT: {str(e)}")
+
+def publish_to_mqtt_f(mqtt_client, base_topic, data):
+    try:
+        def publish_nested_dict(prefix, d):
+            for key, value in d.items():
+                subtopic = f"{prefix}/{key}"
+                if isinstance(value, dict):
+                    # Recursively handle nested dictionaries (meters, batteries)
+                    publish_nested_dict(subtopic, value)
+                else:
+                    # Publish non-dict values
+                    mqtt_client.publish(subtopic, str(value))
+                    logger.debug(f"Published {subtopic}: {value}")
+
+        publish_nested_dict(base_topic, data)
+        logger.debug(f"Successfully published all data under MQTT topic: {base_topic}")
     except Exception as e:
         logger.error(f"Failed to publish to MQTT: {str(e)}")
 
@@ -123,6 +141,7 @@ def main():
     argparser.add_argument("--timeout", type=int, default=1, help="Connection timeout")
     argparser.add_argument("--unit", type=int, default=1, help="Modbus device address")
     argparser.add_argument("--json", action="store_true", default=False, help="Output as JSON")
+    argparser.add_argument("--flatten", action="store_true", default=False, help="Publish individual variables to separate MQTT topics")
     argparser.add_argument("--mqtt-server", type=str, help="MQTT server address")
     argparser.add_argument("--mqtt-port", type=int, default=1883, help="MQTT server port")
     argparser.add_argument("--mqtt-topic", type=str, help="MQTT topic to publish data to")
@@ -151,12 +170,14 @@ def main():
         try:
             values = monitor.get_inverter_data()
             if values:
-                if args.json:
+                if args.flatten and mqtt_client:  # Flatten and publish to MQTT
+                    publish_to_mqtt_f(mqtt_client, args.mqtt_topic, values)
+                elif args.json:                   # JSON output
                     if mqtt_client:
-                        publish_to_mqtt(mqtt_client, args.mqtt_topic, values)
+                        publish_to_mqtt_j(mqtt_client, args.mqtt_topic, values)
                     else:
                         print(json.dumps(values, indent=4))
-                else:
+                else:                             # Default console output
                     print_inverter_data(monitor.inverter, values)
             else:
                 logger.warning(f"Failed to get inverter data, will retry in {args.interval} seconds")
@@ -170,7 +191,6 @@ def main():
             logger.error(f"Unexpected error: {str(e)}\n{traceback.format_exc()}")
         
         time.sleep(args.interval)
-
 def print_inverter_data(inverter, values):
     print(f"{inverter}:")
     print("\nRegisters:")
