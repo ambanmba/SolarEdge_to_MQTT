@@ -9,10 +9,13 @@ import logging
 import logging.handlers
 import traceback
 from datetime import datetime
+import configparser
+import os
 
 # Configure logging
 DEBUG = False
 DEBUG_LOG = "/home/bor/solaredge.log"
+CONFIG_FILE = "/home/bor/SolarEdge_to_MQTT/solaredge.ini"
 
 def setup_logging():
     logger = logging.getLogger('solaredge_mqtt')
@@ -39,7 +42,7 @@ class SolarEdgeMonitor:
         self.port = port
         self.timeout = timeout
         self.unit = unit
-        self.include_batteries = include_batteries  # Flag to control battery data
+        self.include_batteries = include_batteries
         self.connection_attempts = 0
         self.last_successful_read = None
         self.consecutive_failures = 0
@@ -87,7 +90,7 @@ class SolarEdgeMonitor:
             if self.include_batteries:
                 values["batteries"] = {battery: params.read_all() for battery, params in self.inverter.batteries().items()}
             else:
-                values["batteries"] = {}  # Empty dict if batteries are excluded
+                values["batteries"] = {}
             
             values["monitoring"] = {
                 "last_successful_read": self.last_successful_read.isoformat() if self.last_successful_read else None,
@@ -141,20 +144,39 @@ def publish_to_mqtt_f(mqtt_client, base_topic, data):
     except Exception as e:
         logger.error(f"Failed to publish to MQTT: {str(e)}")
 
+def load_config(config_file):
+    config = configparser.ConfigParser()
+    if os.path.exists(config_file):
+        config.read(config_file)
+        logger.info(f"Loaded configuration from {config_file}")
+    else:
+        logger.warning(f"Config file {config_file} not found, using defaults")
+    return config
+
 def main():
+    # Load config file
+    config = load_config(CONFIG_FILE)
+
+    # Set up argument parser with config defaults
     argparser = argparse.ArgumentParser(description="Monitor SolarEdge Leader and Follower inverters via the Leader")
-    argparser.add_argument("host", type=str, help="Leader inverter Modbus TCP address")
-    argparser.add_argument("port", type=int, help="Leader inverter Modbus TCP port")
-    argparser.add_argument("--timeout", type=int, default=1, help="Connection timeout")
-    argparser.add_argument("--unit-leader", type=int, default=1, help="Leader inverter unit ID (default: 1)")
-    argparser.add_argument("--unit-follower", type=int, default=2, help="Follower inverter unit ID (default: 2)")
-    argparser.add_argument("--json", action="store_true", default=False, help="Output as JSON")
-    argparser.add_argument("--flatten", action="store_true", default=False, help="Publish individual variables to separate MQTT topics")
-    argparser.add_argument("--mqtt-server", type=str, help="MQTT server address")
-    argparser.add_argument("--mqtt-port", type=int, default=1883, help="MQTT server port")
-    argparser.add_argument("--mqtt-topic", type=str, default="solaredge", help="Base MQTT topic (default: solaredge)")
-    argparser.add_argument("--interval", type=int, default=10, help="Interval in seconds to refresh and publish data")
+    argparser.add_argument("host", type=str, nargs="?", default=config.get('leader', 'host', fallback=None), help="Leader inverter Modbus TCP address")
+    argparser.add_argument("port", type=int, nargs="?", default=config.getint('leader', 'port', fallback=None), help="Leader inverter Modbus TCP port")
+    argparser.add_argument("--timeout", type=int, default=config.getint('leader', 'timeout', fallback=1), help="Connection timeout")
+    argparser.add_argument("--unit-leader", type=int, default=config.getint('leader', 'unit', fallback=1), help="Leader inverter unit ID")
+    argparser.add_argument("--unit-follower", type=int, default=config.getint('follower', 'unit', fallback=2), help="Follower inverter unit ID")
+    argparser.add_argument("--json", action="store_true", default=config.getboolean('general', 'json', fallback=False), help="Output as JSON")
+    argparser.add_argument("--flatten", action="store_true", default=config.getboolean('general', 'flatten', fallback=False), help="Publish individual variables to separate MQTT topics")
+    argparser.add_argument("--mqtt-server", type=str, default=config.get('mqtt', 'server', fallback=None), help="MQTT server address")
+    argparser.add_argument("--mqtt-port", type=int, default=config.getint('mqtt', 'port', fallback=1883), help="MQTT server port")
+    argparser.add_argument("--mqtt-topic", type=str, default=config.get('mqtt', 'topic', fallback='solaredge'), help="Base MQTT topic")
+    argparser.add_argument("--interval", type=int, default=config.getint('general', 'interval', fallback=10), help="Interval in seconds to refresh and publish data")
+
     args = argparser.parse_args()
+
+    # Require host and port if not in config
+    if not args.host or not args.port:
+        logger.error("Host and port must be provided via command line or config file")
+        return
 
     # Leader inverter (includes batteries)
     leader_monitor = SolarEdgeMonitor(
