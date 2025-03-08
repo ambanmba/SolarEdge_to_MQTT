@@ -114,7 +114,7 @@ def publish_to_mqtt_j(mqtt_client, topic, data):
         if not mqtt_client.is_connected():
             logger.warning("MQTT client disconnected, attempting to reconnect")
             mqtt_client.reconnect()
-            time.sleep(1)  # Brief delay to allow reconnection
+            time.sleep(1)
         mqtt_client.publish(topic, json.dumps(data))
         logger.debug(f"Successfully published data to MQTT topic: {topic}")
     except Exception as e:
@@ -125,7 +125,7 @@ def publish_to_mqtt_f(mqtt_client, base_topic, data):
         if not mqtt_client.is_connected():
             logger.warning("MQTT client disconnected, attempting to reconnect")
             mqtt_client.reconnect()
-            time.sleep(1)  # Brief delay to allow reconnection
+            time.sleep(1)
         def publish_nested_dict(prefix, d):
             for key, value in d.items():
                 subtopic = f"{prefix}/{key}"
@@ -162,22 +162,26 @@ def main():
 
     mqtt_client = None
     if args.mqtt_server:
-        # Define MQTT callbacks
-        def on_connect(client, userdata, flags, rc):
-            if rc == 0:
+        # Define MQTT callbacks with API version 2
+        def on_connect(client, userdata, flags, reason_code, properties=None):
+            if reason_code == 0:
                 logger.info("Connected to MQTT broker successfully")
             else:
-                logger.error(f"Failed to connect to MQTT broker, return code {rc}")
+                logger.error(f"Failed to connect to MQTT broker, reason code {reason_code}")
 
-        def on_disconnect(client, userdata, rc):
-            if rc != 0:
-                logger.warning(f"Unexpected MQTT disconnection, return code {rc}. Will attempt to reconnect...")
+        def on_disconnect(client, userdata, reason_code, properties=None):
+            if reason_code != 0:
+                logger.warning(f"Unexpected MQTT disconnection, reason code {reason_code}. Will attempt to reconnect...")
 
         try:
-            mqtt_client = mqtt.Client(client_id="solaredge_mqtt")
+            mqtt_client = mqtt.Client(
+                client_id="solaredge_mqtt",
+                protocol=mqtt.MQTTv5,
+                callback_api_version=mqtt.CallbackAPIVersion.VERSION2  # Explicitly use VERSION2
+            )
             mqtt_client.on_connect = on_connect
             mqtt_client.on_disconnect = on_disconnect
-            mqtt_client.reconnect_delay_set(min_delay=1, max_delay=60)  # Exponential backoff: 1s to 60s
+            mqtt_client.reconnect_delay_set(min_delay=1, max_delay=60)
             mqtt_client.connect(args.mqtt_server, args.mqtt_port, keepalive=60)
             mqtt_client.loop_start()
             logger.info(f"Attempting to connect to MQTT broker at {args.mqtt_server}:{args.mqtt_port}")
@@ -189,14 +193,14 @@ def main():
         try:
             values = monitor.get_inverter_data()
             if values:
-                if args.flatten and mqtt_client:  # Flatten and publish to MQTT
+                if args.flatten and mqtt_client:
                     publish_to_mqtt_f(mqtt_client, args.mqtt_topic, values)
-                elif args.json:                   # JSON output
+                elif args.json:
                     if mqtt_client:
                         publish_to_mqtt_j(mqtt_client, args.mqtt_topic, values)
                     else:
                         print(json.dumps(values, indent=4))
-                else:                             # Default console output
+                else:
                     print_inverter_data(monitor.inverter, values)
             else:
                 logger.warning(f"Failed to get inverter data, will retry in {args.interval} seconds")
