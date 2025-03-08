@@ -46,7 +46,7 @@ class SolarEdgeMonitor:
         self.fields = fields
         self.battery_fields = battery_fields
         self.meter_fields = meter_fields
-        self.all_fields = all_fields  # Override to fetch all fields
+        self.all_fields = all_fields
         self.connection_attempts = 0
         self.last_successful_read = None
         self.consecutive_failures = 0
@@ -98,7 +98,7 @@ class SolarEdgeMonitor:
                     try:
                         values[field] = self.inverter.read(field)
                     except Exception as e:
-                        logger.warning(f"Failed to read inverter field '{field}' from unit {self.unit}: {str(e)} - Check field name in config")
+                        logger.warning(f"Failed to read inverter field '{field}' from unit {self.unit}: {str(e)}")
                 scale_fields = {f"{field}_scale" for field in self.fields if f"{field}_scale" in self.inverter.registers}
                 for scale_field in scale_fields:
                     try:
@@ -108,10 +108,21 @@ class SolarEdgeMonitor:
 
             # Meter fields
             values["meters"] = {}
+            meters = self.inverter.meters()
             if self.all_fields or (self.meter_fields and not self.all_fields):
-                for meter, params in self.inverter.meters().items():
+                for meter, params in meters.items():
+                    # Read all registers to check address
+                    meter_data = params.read_all()
+                    try:
+                        meter_address = meter_data.get("c_deviceaddress", None)
+                        if meter_address is None or meter_address >= 32768:  # Invalid or garbage address
+                            logger.warning(f"Skipping meter {meter} with invalid or missing address: {meter_address}")
+                            continue
+                    except Exception as e:
+                        logger.warning(f"Failed to validate meter {meter} address: {str(e)}")
+                        continue
                     if self.all_fields:
-                        meter_data = params.read_all()
+                        values["meters"][meter] = meter_data  # Use the full data we already read
                     else:
                         meter_data = {}
                         for field in self.meter_fields:
@@ -125,7 +136,7 @@ class SolarEdgeMonitor:
                                 meter_data[scale_field] = params.read(scale_field)
                             except Exception as e:
                                 logger.warning(f"Failed to read meter scale field '{scale_field}' from unit {self.unit}, meter {meter}: {str(e)}")
-                    values["meters"][meter] = meter_data
+                        values["meters"][meter] = meter_data
 
             # Battery fields
             values["batteries"] = {}
