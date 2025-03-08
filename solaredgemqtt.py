@@ -13,7 +13,7 @@ import configparser
 import os
 
 # Configure logging
-DEBUG = False
+DEBUG = True  # Enable debug to see publishing details
 DEBUG_LOG = "/home/bor/solaredge.log"
 CONFIG_FILE = "/home/bor/SolarEdge_to_MQTT/solaredge.ini"
 
@@ -120,10 +120,15 @@ def publish_to_mqtt_j(mqtt_client, topic, data):
             logger.warning("MQTT client disconnected, attempting to reconnect")
             mqtt_client.reconnect()
             time.sleep(1)
-        mqtt_client.publish(topic, json.dumps(data))
-        logger.debug(f"Successfully published data to MQTT topic: {topic}")
+        payload = json.dumps(data)
+        logger.debug(f"Publishing JSON to {topic}: {payload[:100]}...")  # Log first 100 chars of payload
+        result = mqtt_client.publish(topic, payload)
+        if result.rc == mqtt.MQTT_ERR_SUCCESS:
+            logger.debug(f"Successfully published JSON data to MQTT topic: {topic}")
+        else:
+            logger.error(f"Failed to publish JSON to {topic}, return code: {result.rc}")
     except Exception as e:
-        logger.error(f"Failed to publish to MQTT: {str(e)}")
+        logger.error(f"Failed to publish JSON to MQTT: {str(e)}\n{traceback.format_exc()}")
 
 def publish_to_mqtt_f(mqtt_client, base_topic, data):
     try:
@@ -140,45 +145,61 @@ def publish_to_mqtt_f(mqtt_client, base_topic, data):
                     mqtt_client.publish(subtopic, str(value))
                     logger.debug(f"Published {subtopic}: {value}")
         publish_nested_dict(base_topic, data)
-        logger.debug(f"Successfully published all data under MQTT topic: {base_topic}")
+        logger.debug(f"Successfully published flattened data under MQTT topic: {base_topic}")
     except Exception as e:
-        logger.error(f"Failed to publish to MQTT: {str(e)}")
+        logger.error(f"Failed to publish flattened data to MQTT: {str(e)}\n{traceback.format_exc()}")
 
 def load_config(config_file):
     config = configparser.ConfigParser()
     if os.path.exists(config_file):
         config.read(config_file)
         logger.info(f"Loaded configuration from {config_file}")
-    else:
-        logger.warning(f"Config file {config_file} not found, using defaults")
+        return config
+    logger.warning(f"Config file {config_file} not found, using command-line arguments")
     return config
 
 def main():
-    # Load config file
     config = load_config(CONFIG_FILE)
 
-    # Set up argument parser with config defaults
+    defaults = {
+        'host': config.get('leader', 'host', fallback=None),
+        'port': config.getint('leader', 'port', fallback=None),
+        'timeout': config.getint('leader', 'timeout', fallback=1),
+        'unit_leader': config.getint('leader', 'unit', fallback=1),
+        'unit_follower': config.getint('follower', 'unit', fallback=2),
+        'json': config.getboolean('general', 'json', fallback=False),
+        'flatten': config.getboolean('general', 'flatten', fallback=False),
+        'mqtt_server': config.get('mqtt', 'server', fallback=None),
+        'mqtt_port': config.getint('mqtt', 'port', fallback=1883),
+        'mqtt_topic': config.get('mqtt', 'topic', fallback='solaredge'),
+        'interval': config.getint('general', 'interval', fallback=10)
+    }
+
     argparser = argparse.ArgumentParser(description="Monitor SolarEdge Leader and Follower inverters via the Leader")
-    argparser.add_argument("host", type=str, nargs="?", default=config.get('leader', 'host', fallback=None), help="Leader inverter Modbus TCP address")
-    argparser.add_argument("port", type=int, nargs="?", default=config.getint('leader', 'port', fallback=None), help="Leader inverter Modbus TCP port")
-    argparser.add_argument("--timeout", type=int, default=config.getint('leader', 'timeout', fallback=1), help="Connection timeout")
-    argparser.add_argument("--unit-leader", type=int, default=config.getint('leader', 'unit', fallback=1), help="Leader inverter unit ID")
-    argparser.add_argument("--unit-follower", type=int, default=config.getint('follower', 'unit', fallback=2), help="Follower inverter unit ID")
-    argparser.add_argument("--json", action="store_true", default=config.getboolean('general', 'json', fallback=False), help="Output as JSON")
-    argparser.add_argument("--flatten", action="store_true", default=config.getboolean('general', 'flatten', fallback=False), help="Publish individual variables to separate MQTT topics")
-    argparser.add_argument("--mqtt-server", type=str, default=config.get('mqtt', 'server', fallback=None), help="MQTT server address")
-    argparser.add_argument("--mqtt-port", type=int, default=config.getint('mqtt', 'port', fallback=1883), help="MQTT server port")
-    argparser.add_argument("--mqtt-topic", type=str, default=config.get('mqtt', 'topic', fallback='solaredge'), help="Base MQTT topic")
-    argparser.add_argument("--interval", type=int, default=config.getint('general', 'interval', fallback=10), help="Interval in seconds to refresh and publish data")
+    argparser.add_argument("host", type=str, nargs='?', default=defaults['host'], help="Leader inverter Modbus TCP address")
+    argparser.add_argument("port", type=int, nargs='?', default=defaults['port'], help="Leader inverter Modbus TCP port")
+    argparser.add_argument("--timeout", type=int, default=defaults['timeout'], help="Connection timeout")
+    argparser.add_argument("--unit-leader", type=int, default=defaults['unit_leader'], help="Leader inverter unit ID")
+    argparser.add_argument("--unit-follower", type=int, default=defaults['unit_follower'], help="Follower inverter unit ID")
+    argparser.add_argument("--json", action="store_true", dest="json_cmd", help="Output as JSON")
+    argparser.add_argument("--flatten", action="store_true", dest="flatten_cmd", help="Publish individual variables to separate MQTT topics")
+    argparser.add_argument("--mqtt-server", type=str, default=defaults['mqtt_server'], help="MQTT server address")
+    argparser.add_argument("--mqtt-port", type=int, default=defaults['mqtt_port'], help="MQTT server port")
+    argparser.add_argument("--mqtt-topic", type=str, default=defaults['mqtt_topic'], help="Base MQTT topic")
+    argparser.add_argument("--interval", type=int, default=defaults['interval'], help="Interval in seconds to refresh and publish data")
 
     args = argparser.parse_args()
 
-    # Require host and port if not in config
-    if not args.host or not args.port:
+    args.json = args.json_cmd if args.json_cmd else defaults['json']
+    args.flatten = args.flatten_cmd if args.flatten_cmd else defaults['flatten']
+
+    logger.info(f"Final arguments: {vars(args)}")
+
+    if not args.host or args.port is None:
         logger.error("Host and port must be provided via command line or config file")
+        argparser.print_help()
         return
 
-    # Leader inverter (includes batteries)
     leader_monitor = SolarEdgeMonitor(
         host=args.host,
         port=args.port,
@@ -187,7 +208,6 @@ def main():
         include_batteries=True
     )
 
-    # Follower inverter (excludes batteries)
     follower_monitor = SolarEdgeMonitor(
         host=args.host,
         port=args.port,
@@ -226,34 +246,30 @@ def main():
 
     while True:
         try:
-            # Leader inverter data
             leader_values = leader_monitor.get_inverter_data()
             if leader_values:
-                if args.flatten and mqtt_client:
+                if mqtt_client and args.json:
+                    publish_to_mqtt_j(mqtt_client, f"{args.mqtt_topic}/inverter1", leader_values)
+                elif mqtt_client and args.flatten:
                     publish_to_mqtt_f(mqtt_client, f"{args.mqtt_topic}/inverter1", leader_values)
                 elif args.json:
-                    if mqtt_client:
-                        publish_to_mqtt_j(mqtt_client, f"{args.mqtt_topic}/inverter1", leader_values)
-                    else:
-                        print("Leader Inverter (Unit {}):".format(args.unit_leader))
-                        print(json.dumps(leader_values, indent=4))
+                    print("Leader Inverter (Unit {}):".format(args.unit_leader))
+                    print(json.dumps(leader_values, indent=4))
                 else:
                     print("Leader Inverter (Unit {}):".format(args.unit_leader))
                     print_inverter_data(leader_monitor.inverter, leader_values)
             else:
                 logger.warning(f"Failed to get data from Leader inverter (unit {args.unit_leader}), will retry in {args.interval} seconds")
 
-            # Follower inverter data
             follower_values = follower_monitor.get_inverter_data()
             if follower_values:
-                if args.flatten and mqtt_client:
+                if mqtt_client and args.json:
+                    publish_to_mqtt_j(mqtt_client, f"{args.mqtt_topic}/inverter2", follower_values)
+                elif mqtt_client and args.flatten:
                     publish_to_mqtt_f(mqtt_client, f"{args.mqtt_topic}/inverter2", follower_values)
                 elif args.json:
-                    if mqtt_client:
-                        publish_to_mqtt_j(mqtt_client, f"{args.mqtt_topic}/inverter2", follower_values)
-                    else:
-                        print("Follower Inverter (Unit {}):".format(args.unit_follower))
-                        print(json.dumps(follower_values, indent=4))
+                    print("Follower Inverter (Unit {}):".format(args.unit_follower))
+                    print(json.dumps(follower_values, indent=4))
                 else:
                     print("Follower Inverter (Unit {}):".format(args.unit_follower))
                     print_inverter_data(follower_monitor.inverter, follower_values)
