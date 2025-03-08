@@ -13,7 +13,7 @@ import configparser
 import os
 
 # Configure logging
-DEBUG = False  # Set to True for detailed logs
+DEBUG = False
 DEBUG_LOG = "/home/bor/solaredge.log"
 CONFIG_FILE = "/home/bor/SolarEdge_to_MQTT/solaredge.ini"
 
@@ -37,12 +37,16 @@ def setup_logging():
 logger = setup_logging()
 
 class SolarEdgeMonitor:
-    def __init__(self, host, port, timeout=1, unit=1, include_batteries=True):
+    def __init__(self, host, port, timeout=1, unit=1, include_batteries=True, fields=None, battery_fields=None, meter_fields=None, all_fields=False):
         self.host = host
         self.port = port
         self.timeout = timeout
         self.unit = unit
         self.include_batteries = include_batteries
+        self.fields = fields
+        self.battery_fields = battery_fields
+        self.meter_fields = meter_fields
+        self.all_fields = all_fields  # Override to fetch all fields
         self.connection_attempts = 0
         self.last_successful_read = None
         self.consecutive_failures = 0
@@ -63,7 +67,7 @@ class SolarEdgeMonitor:
                 unit=self.unit
             )
             
-            self.inverter.read_all()
+            self.inverter.read("c_manufacturer")
             self.last_successful_read = datetime.now()
             self.consecutive_failures = 0
             logger.info(f"Successfully connected to inverter at {self.host}:{self.port}, unit {self.unit}")
@@ -85,12 +89,64 @@ class SolarEdgeMonitor:
             return None
             
         try:
-            values = self.inverter.read_all()
-            values["meters"] = {meter: params.read_all() for meter, params in self.inverter.meters().items()}
-            if self.include_batteries:
-                values["batteries"] = {battery: params.read_all() for battery, params in self.inverter.batteries().items()}
+            # Inverter fields
+            if self.all_fields or not self.fields:
+                values = self.inverter.read_all()
             else:
-                values["batteries"] = {}
+                values = {}
+                for field in self.fields:
+                    try:
+                        values[field] = self.inverter.read(field)
+                    except Exception as e:
+                        logger.warning(f"Failed to read inverter field '{field}' from unit {self.unit}: {str(e)} - Check field name in config")
+                scale_fields = {f"{field}_scale" for field in self.fields if f"{field}_scale" in self.inverter.registers}
+                for scale_field in scale_fields:
+                    try:
+                        values[scale_field] = self.inverter.read(scale_field)
+                    except Exception as e:
+                        logger.warning(f"Failed to read inverter scale field '{scale_field}' from unit {self.unit}: {str(e)}")
+
+            # Meter fields
+            values["meters"] = {}
+            if self.all_fields or (self.meter_fields and not self.all_fields):
+                for meter, params in self.inverter.meters().items():
+                    if self.all_fields:
+                        meter_data = params.read_all()
+                    else:
+                        meter_data = {}
+                        for field in self.meter_fields:
+                            try:
+                                meter_data[field] = params.read(field)
+                            except Exception as e:
+                                logger.warning(f"Failed to read meter field '{field}' from unit {self.unit}, meter {meter}: {str(e)}")
+                        scale_fields = {f"{field}_scale" for field in self.meter_fields if f"{field}_scale" in params.registers}
+                        for scale_field in scale_fields:
+                            try:
+                                meter_data[scale_field] = params.read(scale_field)
+                            except Exception as e:
+                                logger.warning(f"Failed to read meter scale field '{scale_field}' from unit {self.unit}, meter {meter}: {str(e)}")
+                    values["meters"][meter] = meter_data
+
+            # Battery fields
+            values["batteries"] = {}
+            if self.include_batteries and (self.all_fields or self.battery_fields):
+                for battery, params in self.inverter.batteries().items():
+                    if self.all_fields:
+                        battery_data = params.read_all()
+                    else:
+                        battery_data = {}
+                        for field in self.battery_fields:
+                            try:
+                                battery_data[field] = params.read(field)
+                            except Exception as e:
+                                logger.warning(f"Failed to read battery field '{field}' from unit {self.unit}, battery {battery}: {str(e)}")
+                        scale_fields = {f"{field}_scale" for field in self.battery_fields if f"{field}_scale" in params.registers}
+                        for scale_field in scale_fields:
+                            try:
+                                battery_data[scale_field] = params.read(scale_field)
+                            except Exception as e:
+                                logger.warning(f"Failed to read battery scale field '{scale_field}' from unit {self.unit}, battery {battery}: {str(e)}")
+                    values["batteries"][battery] = battery_data
             
             values["monitoring"] = {
                 "last_successful_read": self.last_successful_read.isoformat() if self.last_successful_read else None,
@@ -174,6 +230,26 @@ def main():
         'interval': config.getint('general', 'interval', fallback=10)
     }
 
+    leader_fields = config.get('leader', 'fields', fallback=None)
+    if leader_fields:
+        leader_fields = [field.strip() for field in leader_fields.split(',') if ';' not in field]
+    leader_battery_fields = config.get('leader', 'battery_fields', fallback=None)
+    if leader_battery_fields:
+        leader_battery_fields = [field.strip() for field in leader_battery_fields.split(',') if ';' not in field]
+    leader_meter_fields = config.get('leader', 'meter_fields', fallback=None)
+    if leader_meter_fields:
+        leader_meter_fields = [field.strip() for field in leader_meter_fields.split(',') if ';' not in field]
+
+    follower_fields = config.get('follower', 'fields', fallback=None)
+    if follower_fields:
+        follower_fields = [field.strip() for field in follower_fields.split(',') if ';' not in field]
+    follower_battery_fields = config.get('follower', 'battery_fields', fallback=None)
+    if follower_battery_fields:
+        follower_battery_fields = [field.strip() for field in follower_battery_fields.split(',') if ';' not in field]
+    follower_meter_fields = config.get('follower', 'meter_fields', fallback=None)
+    if follower_meter_fields:
+        follower_meter_fields = [field.strip() for field in follower_meter_fields.split(',') if ';' not in field]
+
     argparser = argparse.ArgumentParser(description="Monitor SolarEdge Leader and Follower inverters via the Leader")
     argparser.add_argument("host", type=str, nargs='?', default=defaults['host'], help="Leader inverter Modbus TCP address")
     argparser.add_argument("port", type=int, nargs='?', default=defaults['port'], help="Leader inverter Modbus TCP port")
@@ -186,6 +262,7 @@ def main():
     argparser.add_argument("--mqtt-port", type=int, default=defaults['mqtt_port'], help="MQTT server port")
     argparser.add_argument("--mqtt-topic", type=str, default=defaults['mqtt_topic'], help="Base MQTT topic")
     argparser.add_argument("--interval", type=int, default=defaults['interval'], help="Interval in seconds to refresh and publish data")
+    argparser.add_argument("--all-fields", action="store_true", help="Override config and fetch all fields from inverters, batteries, and meters")
 
     args = argparser.parse_args()
 
@@ -193,6 +270,20 @@ def main():
     args.flatten = args.flatten_cmd if args.flatten_cmd else defaults['flatten']
 
     logger.info(f"Final arguments: {vars(args)}")
+    if leader_fields and not args.all_fields:
+        logger.info(f"Leader inverter fields: {leader_fields}")
+    if leader_battery_fields and not args.all_fields:
+        logger.info(f"Leader battery fields: {leader_battery_fields}")
+    if leader_meter_fields and not args.all_fields:
+        logger.info(f"Leader meter fields: {leader_meter_fields}")
+    if follower_fields and not args.all_fields:
+        logger.info(f"Follower inverter fields: {follower_fields}")
+    if follower_battery_fields and not args.all_fields:
+        logger.info(f"Follower battery fields: {follower_battery_fields}")
+    if follower_meter_fields and not args.all_fields:
+        logger.info(f"Follower meter fields: {follower_meter_fields}")
+    if args.all_fields:
+        logger.info("Fetching all fields for all components due to --all-fields override")
 
     if not args.host or args.port is None:
         logger.error("Host and port must be provided via command line or config file")
@@ -204,7 +295,11 @@ def main():
         port=args.port,
         timeout=args.timeout,
         unit=args.unit_leader,
-        include_batteries=True
+        include_batteries=True,
+        fields=leader_fields,
+        battery_fields=leader_battery_fields,
+        meter_fields=leader_meter_fields,
+        all_fields=args.all_fields
     )
 
     follower_monitor = SolarEdgeMonitor(
@@ -212,7 +307,11 @@ def main():
         port=args.port,
         timeout=args.timeout,
         unit=args.unit_follower,
-        include_batteries=False
+        include_batteries=False,
+        fields=follower_fields,
+        battery_fields=follower_battery_fields,
+        meter_fields=follower_meter_fields,
+        all_fields=args.all_fields
     )
 
     mqtt_client = None
@@ -238,7 +337,7 @@ def main():
             mqtt_client.reconnect_delay_set(min_delay=1, max_delay=60)
             mqtt_client.connect(args.mqtt_server, args.mqtt_port, keepalive=60)
             mqtt_client.loop_start()
-            time.sleep(0.5)  # Ensure MQTT thread is ready
+            time.sleep(0.5)
             logger.info(f"Attempting to connect to MQTT broker at {args.mqtt_server}:{args.mqtt_port}")
         except Exception as e:
             logger.error(f"Failed to connect to MQTT broker on startup: {str(e)}")
@@ -289,35 +388,18 @@ def main():
 def print_inverter_data(inverter, values):
     print(f"{inverter}:")
     print("\nRegisters:")
-    print(f"\tManufacturer: {values['c_manufacturer']}")
-    print(f"\tModel: {values['c_model']}")
-    print(f"\tType: {solaredge_modbus.C_SUNSPEC_DID_MAP[str(values['c_sunspec_did'])]}")
-    print(f"\tVersion: {values['c_version']}")
-    print(f"\tSerial: {values['c_serialnumber']}")
-    print(f"\tStatus: {solaredge_modbus.INVERTER_STATUS_MAP[values['status']]}")
-    print(f"\tTemperature: {(values['temperature'] * (10 ** values['temperature_scale'])):.2f}{inverter.registers['temperature'][6]}")
-    print(f"\tCurrent: {(values['current'] * (10 ** values['current_scale'])):.2f}{inverter.registers['current'][6]}")
-    if values['c_sunspec_did'] == solaredge_modbus.sunspecDID.THREE_PHASE_INVERTER.value:
-        print(f"\tPhase 1 Current: {(values['l1_current'] * (10 ** values['current_scale'])):.2f}{inverter.registers['l1_current'][6]}")
-        print(f"\tPhase 2 Current: {(values['l2_current'] * (10 ** values['current_scale'])):.2f}{inverter.registers['l2_current'][6]}")
-        print(f"\tPhase 3 Current: {(values['l3_current'] * (10 ** values['current_scale'])):.2f}{inverter.registers['l3_current'][6]}")
-        print(f"\tPhase 1 voltage: {(values['l1_voltage'] * (10 ** values['voltage_scale'])):.2f}{inverter.registers['l1_voltage'][6]}")
-        print(f"\tPhase 2 voltage: {(values['l2_voltage'] * (10 ** values['voltage_scale'])):.2f}{inverter.registers['l2_voltage'][6]}")
-        print(f"\tPhase 3 voltage: {(values['l3_voltage'] * (10 ** values['voltage_scale'])):.2f}{inverter.registers['l3_voltage'][6]}")
-        print(f"\tPhase 1-N voltage: {(values['l1n_voltage'] * (10 ** values['voltage_scale'])):.2f}{inverter.registers['l1n_voltage'][6]}")
-        print(f"\tPhase 2-N voltage: {(values['l2n_voltage'] * (10 ** values['voltage_scale'])):.2f}{inverter.registers['l2n_voltage'][6]}")
-        print(f"\tPhase 3-N voltage: {(values['l3n_voltage'] * (10 ** values['voltage_scale'])):.2f}{inverter.registers['l3n_voltage'][6]}")
-    else:
-        print(f"\tVoltage: {(values['l1_voltage'] * (10 ** values['voltage_scale'])):.2f}{inverter.registers['l1_voltage'][6]}")
-    print(f"\tFrequency: {(values['frequency'] * (10 ** values['frequency_scale'])):.2f}{inverter.registers['frequency'][6]}")
-    print(f"\tPower: {(values['power_ac'] * (10 ** values['power_ac_scale'])):.2f}{inverter.registers['power_ac'][6]}")
-    print(f"\tPower (Apparent): {(values['power_apparent'] * (10 ** values['power_apparent_scale'])):.2f}{inverter.registers['power_apparent'][6]}")
-    print(f"\tPower (Reactive): {(values['power_reactive'] * (10 ** values['power_reactive_scale'])):.2f}{inverter.registers['power_reactive'][6]}")
-    print(f"\tPower Factor: {(values['power_factor'] * (10 ** values['power_factor_scale'])):.2f}{inverter.registers['power_factor'][6]}")
-    print(f"\tTotal Energy: {(values['energy_total'] * (10 ** values['energy_total_scale']))}{inverter.registers['energy_total'][6]}")
-    print(f"\tDC Current: {(values['current_dc'] * (10 ** values['current_dc_scale'])):.2f}{inverter.registers['current_dc'][6]}")
-    print(f"\tDC Voltage: {(values['voltage_dc'] * (10 ** values['voltage_dc_scale'])):.2f}{inverter.registers['voltage_dc'][6]}")
-    print(f"\tDC Power: {(values['power_dc'] * (10 ** values['power_dc_scale'])):.2f}{inverter.registers['power_dc'][6]}")
+    for key, value in values.items():
+        if key not in ["meters", "batteries", "monitoring"] and not key.endswith("_scale"):
+            try:
+                scale_key = f"{key}_scale"
+                if scale_key in values:
+                    scaled_value = value * (10 ** values[scale_key])
+                    unit = inverter.registers.get(key, [None]*7)[6] or ""
+                    print(f"\t{key.capitalize()}: {scaled_value:.2f}{unit}")
+                else:
+                    print(f"\t{key.capitalize()}: {value}")
+            except Exception:
+                print(f"\t{key.capitalize()}: {value}")
 
 if __name__ == "__main__":
     main()
