@@ -162,14 +162,14 @@ def main():
 
     mqtt_client = None
     if args.mqtt_server:
-        # Define MQTT callbacks with API version 2
+        # Define MQTT callbacks with correct VERSION2 signatures
         def on_connect(client, userdata, flags, reason_code, properties=None):
             if reason_code == 0:
                 logger.info("Connected to MQTT broker successfully")
             else:
                 logger.error(f"Failed to connect to MQTT broker, reason code {reason_code}")
 
-        def on_disconnect(client, userdata, reason_code, properties=None):
+        def on_disconnect(client, userdata, flags, reason_code, properties=None):
             if reason_code != 0:
                 logger.warning(f"Unexpected MQTT disconnection, reason code {reason_code}. Will attempt to reconnect...")
 
@@ -177,7 +177,7 @@ def main():
             mqtt_client = mqtt.Client(
                 client_id="solaredge_mqtt",
                 protocol=mqtt.MQTTv5,
-                callback_api_version=mqtt.CallbackAPIVersion.VERSION2  # Explicitly use VERSION2
+                callback_api_version=mqtt.CallbackAPIVersion.VERSION2
             )
             mqtt_client.on_connect = on_connect
             mqtt_client.on_disconnect = on_disconnect
@@ -225,9 +225,7 @@ def print_inverter_data(inverter, values):
     print(f"\tSerial: {values['c_serialnumber']}")
     print(f"\tStatus: {solaredge_modbus.INVERTER_STATUS_MAP[values['status']]}")
     print(f"\tTemperature: {(values['temperature'] * (10 ** values['temperature_scale'])):.2f}{inverter.registers['temperature'][6]}")
-
     print(f"\tCurrent: {(values['current'] * (10 ** values['current_scale'])):.2f}{inverter.registers['current'][6]}")
-
     if values['c_sunspec_did'] == solaredge_modbus.sunspecDID.THREE_PHASE_INVERTER.value:
         print(f"\tPhase 1 Current: {(values['l1_current'] * (10 ** values['current_scale'])):.2f}{inverter.registers['l1_current'][6]}")
         print(f"\tPhase 2 Current: {(values['l2_current'] * (10 ** values['current_scale'])):.2f}{inverter.registers['l2_current'][6]}")
@@ -240,14 +238,12 @@ def print_inverter_data(inverter, values):
         print(f"\tPhase 3-N voltage: {(values['l3n_voltage'] * (10 ** values['voltage_scale'])):.2f}{inverter.registers['l3n_voltage'][6]}")
     else:
         print(f"\tVoltage: {(values['l1_voltage'] * (10 ** values['voltage_scale'])):.2f}{inverter.registers['l1_voltage'][6]}")
-
     print(f"\tFrequency: {(values['frequency'] * (10 ** values['frequency_scale'])):.2f}{inverter.registers['frequency'][6]}")
     print(f"\tPower: {(values['power_ac'] * (10 ** values['power_ac_scale'])):.2f}{inverter.registers['power_ac'][6]}")
     print(f"\tPower (Apparent): {(values['power_apparent'] * (10 ** values['power_apparent_scale'])):.2f}{inverter.registers['power_apparent'][6]}")
     print(f"\tPower (Reactive): {(values['power_reactive'] * (10 ** values['power_reactive_scale'])):.2f}{inverter.registers['power_reactive'][6]}")
     print(f"\tPower Factor: {(values['power_factor'] * (10 ** values['power_factor_scale'])):.2f}{inverter.registers['power_factor'][6]}")
     print(f"\tTotal Energy: {(values['energy_total'] * (10 ** values['energy_total_scale']))}{inverter.registers['energy_total'][6]}")
-
     print(f"\tDC Current: {(values['current_dc'] * (10 ** values['current_dc_scale'])):.2f}{inverter.registers['current_dc'][6]}")
     print(f"\tDC Voltage: {(values['voltage_dc'] * (10 ** values['voltage_dc_scale'])):.2f}{inverter.registers['voltage_dc'][6]}")
     print(f"\tDC Power: {(values['power_dc'] * (10 ** values['power_dc_scale'])):.2f}{inverter.registers['power_dc'][6]}")
