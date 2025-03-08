@@ -12,13 +12,12 @@ from datetime import datetime
 
 # Configure logging
 DEBUG = False
-DEBUG_LOG = "debug.txt"
+DEBUG_LOG = "/home/bor/solaredge.log"
 
 def setup_logging():
     logger = logging.getLogger('solaredge_mqtt')
     logger.setLevel(logging.DEBUG if DEBUG else logging.INFO)
     
-    # Create rotating file handler
     handler = logging.handlers.RotatingFileHandler(
         DEBUG_LOG, maxBytes=5*1024*1024, backupCount=5
     )
@@ -26,7 +25,6 @@ def setup_logging():
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     
-    # Also print to console
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
@@ -36,11 +34,12 @@ def setup_logging():
 logger = setup_logging()
 
 class SolarEdgeMonitor:
-    def __init__(self, host, port, timeout=1, unit=1):
+    def __init__(self, host, port, timeout=1, unit=1, include_batteries=True):
         self.host = host
         self.port = port
         self.timeout = timeout
         self.unit = unit
+        self.include_batteries = include_batteries  # Flag to control battery data
         self.connection_attempts = 0
         self.last_successful_read = None
         self.consecutive_failures = 0
@@ -52,7 +51,7 @@ class SolarEdgeMonitor:
             
         try:
             self.connection_attempts += 1
-            logger.info(f"Attempting to connect to SolarEdge inverter at {self.host}:{self.port} (Attempt {self.connection_attempts})")
+            logger.info(f"Attempting to connect to inverter at {self.host}:{self.port}, unit {self.unit} (Attempt {self.connection_attempts})")
             
             self.inverter = solaredge_modbus.Inverter(
                 host=self.host,
@@ -61,22 +60,21 @@ class SolarEdgeMonitor:
                 unit=self.unit
             )
             
-            # Test connection by reading a value
             self.inverter.read_all()
             self.last_successful_read = datetime.now()
             self.consecutive_failures = 0
-            logger.info("Successfully connected to SolarEdge inverter")
+            logger.info(f"Successfully connected to inverter at {self.host}:{self.port}, unit {self.unit}")
             return True
             
         except Exception as e:
-            self.inverter = None  # Clear the failed connection
+            self.inverter = None
             self.consecutive_failures += 1
             error_msg = str(e)
             if "Connection refused" in error_msg:
                 log_level = logging.WARNING if self.consecutive_failures == 1 else logging.DEBUG
-                logger.log(log_level, f"Connection refused to {self.host}:{self.port} - Inverter might be offline or not accepting connections")
+                logger.log(log_level, f"Connection refused to {self.host}:{self.port}, unit {self.unit}")
             else:
-                logger.error(f"Failed to connect to SolarEdge inverter: {error_msg}\n{traceback.format_exc()}")
+                logger.error(f"Failed to connect to inverter at {self.host}:{self.port}, unit {self.unit}: {error_msg}\n{traceback.format_exc()}")
             return False
 
     def get_inverter_data(self):
@@ -86,12 +84,16 @@ class SolarEdgeMonitor:
         try:
             values = self.inverter.read_all()
             values["meters"] = {meter: params.read_all() for meter, params in self.inverter.meters().items()}
-            values["batteries"] = {battery: params.read_all() for battery, params in self.inverter.batteries().items()}
+            if self.include_batteries:
+                values["batteries"] = {battery: params.read_all() for battery, params in self.inverter.batteries().items()}
+            else:
+                values["batteries"] = {}  # Empty dict if batteries are excluded
             
             values["monitoring"] = {
                 "last_successful_read": self.last_successful_read.isoformat() if self.last_successful_read else None,
                 "connection_attempts": self.connection_attempts,
-                "consecutive_failures": self.consecutive_failures
+                "consecutive_failures": self.consecutive_failures,
+                "unit_id": self.unit
             }
             
             self.last_successful_read = datetime.now()
@@ -99,14 +101,14 @@ class SolarEdgeMonitor:
             return values
             
         except Exception as e:
-            self.inverter = None  # Connection is likely dead, clear it
+            self.inverter = None
             self.consecutive_failures += 1
             error_msg = str(e)
             if "Connection refused" in error_msg:
                 log_level = logging.WARNING if self.consecutive_failures == 1 else logging.DEBUG
-                logger.log(log_level, f"Failed to read data: Connection refused (Attempt {self.consecutive_failures})")
+                logger.log(log_level, f"Failed to read data from {self.host}:{self.port}, unit {self.unit}: Connection refused")
             else:
-                logger.error(f"Failed to read inverter data: {error_msg}")
+                logger.error(f"Failed to read inverter data from {self.host}:{self.port}, unit {self.unit}: {error_msg}")
             return None
 
 def publish_to_mqtt_j(mqtt_client, topic, data):
@@ -140,29 +142,40 @@ def publish_to_mqtt_f(mqtt_client, base_topic, data):
         logger.error(f"Failed to publish to MQTT: {str(e)}")
 
 def main():
-    argparser = argparse.ArgumentParser()
-    argparser.add_argument("host", type=str, help="Modbus TCP address")
-    argparser.add_argument("port", type=int, help="Modbus TCP port")
+    argparser = argparse.ArgumentParser(description="Monitor SolarEdge Leader and Follower inverters via the Leader")
+    argparser.add_argument("host", type=str, help="Leader inverter Modbus TCP address")
+    argparser.add_argument("port", type=int, help="Leader inverter Modbus TCP port")
     argparser.add_argument("--timeout", type=int, default=1, help="Connection timeout")
-    argparser.add_argument("--unit", type=int, default=1, help="Modbus device address")
+    argparser.add_argument("--unit-leader", type=int, default=1, help="Leader inverter unit ID (default: 1)")
+    argparser.add_argument("--unit-follower", type=int, default=2, help="Follower inverter unit ID (default: 2)")
     argparser.add_argument("--json", action="store_true", default=False, help="Output as JSON")
     argparser.add_argument("--flatten", action="store_true", default=False, help="Publish individual variables to separate MQTT topics")
     argparser.add_argument("--mqtt-server", type=str, help="MQTT server address")
     argparser.add_argument("--mqtt-port", type=int, default=1883, help="MQTT server port")
-    argparser.add_argument("--mqtt-topic", type=str, help="MQTT topic to publish data to")
+    argparser.add_argument("--mqtt-topic", type=str, default="solaredge", help="Base MQTT topic (default: solaredge)")
     argparser.add_argument("--interval", type=int, default=10, help="Interval in seconds to refresh and publish data")
     args = argparser.parse_args()
 
-    monitor = SolarEdgeMonitor(
+    # Leader inverter (includes batteries)
+    leader_monitor = SolarEdgeMonitor(
         host=args.host,
         port=args.port,
         timeout=args.timeout,
-        unit=args.unit
+        unit=args.unit_leader,
+        include_batteries=True
+    )
+
+    # Follower inverter (excludes batteries)
+    follower_monitor = SolarEdgeMonitor(
+        host=args.host,
+        port=args.port,
+        timeout=args.timeout,
+        unit=args.unit_follower,
+        include_batteries=False
     )
 
     mqtt_client = None
     if args.mqtt_server:
-        # Define MQTT callbacks with correct VERSION2 signatures
         def on_connect(client, userdata, flags, reason_code, properties=None):
             if reason_code == 0:
                 logger.info("Connected to MQTT broker successfully")
@@ -191,19 +204,39 @@ def main():
 
     while True:
         try:
-            values = monitor.get_inverter_data()
-            if values:
+            # Leader inverter data
+            leader_values = leader_monitor.get_inverter_data()
+            if leader_values:
                 if args.flatten and mqtt_client:
-                    publish_to_mqtt_f(mqtt_client, args.mqtt_topic, values)
+                    publish_to_mqtt_f(mqtt_client, f"{args.mqtt_topic}/inverter1", leader_values)
                 elif args.json:
                     if mqtt_client:
-                        publish_to_mqtt_j(mqtt_client, args.mqtt_topic, values)
+                        publish_to_mqtt_j(mqtt_client, f"{args.mqtt_topic}/inverter1", leader_values)
                     else:
-                        print(json.dumps(values, indent=4))
+                        print("Leader Inverter (Unit {}):".format(args.unit_leader))
+                        print(json.dumps(leader_values, indent=4))
                 else:
-                    print_inverter_data(monitor.inverter, values)
+                    print("Leader Inverter (Unit {}):".format(args.unit_leader))
+                    print_inverter_data(leader_monitor.inverter, leader_values)
             else:
-                logger.warning(f"Failed to get inverter data, will retry in {args.interval} seconds")
+                logger.warning(f"Failed to get data from Leader inverter (unit {args.unit_leader}), will retry in {args.interval} seconds")
+
+            # Follower inverter data
+            follower_values = follower_monitor.get_inverter_data()
+            if follower_values:
+                if args.flatten and mqtt_client:
+                    publish_to_mqtt_f(mqtt_client, f"{args.mqtt_topic}/inverter2", follower_values)
+                elif args.json:
+                    if mqtt_client:
+                        publish_to_mqtt_j(mqtt_client, f"{args.mqtt_topic}/inverter2", follower_values)
+                    else:
+                        print("Follower Inverter (Unit {}):".format(args.unit_follower))
+                        print(json.dumps(follower_values, indent=4))
+                else:
+                    print("Follower Inverter (Unit {}):".format(args.unit_follower))
+                    print_inverter_data(follower_monitor.inverter, follower_values)
+            else:
+                logger.warning(f"Failed to get data from Follower inverter (unit {args.unit_follower}), will retry in {args.interval} seconds")
 
         except KeyboardInterrupt:
             logger.info("Shutting down SolarEdge monitor")
