@@ -13,7 +13,7 @@ import configparser
 import os
 
 # Configure logging
-DEBUG = True  # Enable debug to see publishing details
+DEBUG = False  # Set to True for detailed logs
 DEBUG_LOG = "/home/bor/solaredge.log"
 CONFIG_FILE = "/home/bor/SolarEdge_to_MQTT/solaredge.ini"
 
@@ -121,12 +121,11 @@ def publish_to_mqtt_j(mqtt_client, topic, data):
             mqtt_client.reconnect()
             time.sleep(1)
         payload = json.dumps(data)
-        logger.debug(f"Publishing JSON to {topic}: {payload[:100]}...")  # Log first 100 chars of payload
         result = mqtt_client.publish(topic, payload)
-        if result.rc == mqtt.MQTT_ERR_SUCCESS:
-            logger.debug(f"Successfully published JSON data to MQTT topic: {topic}")
-        else:
+        if result.rc != mqtt.MQTT_ERR_SUCCESS:
             logger.error(f"Failed to publish JSON to {topic}, return code: {result.rc}")
+        else:
+            logger.debug(f"Successfully published JSON data to MQTT topic: {topic}")
     except Exception as e:
         logger.error(f"Failed to publish JSON to MQTT: {str(e)}\n{traceback.format_exc()}")
 
@@ -239,6 +238,7 @@ def main():
             mqtt_client.reconnect_delay_set(min_delay=1, max_delay=60)
             mqtt_client.connect(args.mqtt_server, args.mqtt_port, keepalive=60)
             mqtt_client.loop_start()
+            time.sleep(0.5)  # Ensure MQTT thread is ready
             logger.info(f"Attempting to connect to MQTT broker at {args.mqtt_server}:{args.mqtt_port}")
         except Exception as e:
             logger.error(f"Failed to connect to MQTT broker on startup: {str(e)}")
