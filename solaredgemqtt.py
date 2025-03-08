@@ -96,46 +96,76 @@ class SolarEdgeMonitor:
                 values = {}
                 for field in self.fields:
                     try:
-                        values[field] = self.inverter.read(field)
+                        value = self.inverter.read(field)
+                        if value is False or value is None:
+                            logger.warning(f"Invalid value '{value}' for inverter field '{field}' on unit {self.unit}")
+                            values[field] = 0  # Default to 0 for numeric fields
+                        else:
+                            values[field] = value
                     except Exception as e:
                         logger.warning(f"Failed to read inverter field '{field}' from unit {self.unit}: {str(e)}")
+                        values[field] = 0
                 scale_fields = {f"{field}_scale" for field in self.fields if f"{field}_scale" in self.inverter.registers}
                 for scale_field in scale_fields:
                     try:
-                        values[scale_field] = self.inverter.read(scale_field)
+                        value = self.inverter.read(scale_field)
+                        if value is False or value is None:
+                            logger.warning(f"Invalid value '{value}' for inverter scale field '{scale_field}' on unit {self.unit}")
+                            values[scale_field] = 0
+                        else:
+                            values[scale_field] = value
                     except Exception as e:
                         logger.warning(f"Failed to read inverter scale field '{scale_field}' from unit {self.unit}: {str(e)}")
+                        values[scale_field] = 0
 
             # Meter fields
             values["meters"] = {}
             meters = self.inverter.meters()
             if self.all_fields or (self.meter_fields and not self.all_fields):
                 for meter, params in meters.items():
-                    # Read all registers to check address
                     meter_data = params.read_all()
                     try:
                         meter_address = meter_data.get("c_deviceaddress", None)
-                        if meter_address is None or meter_address >= 32768:  # Invalid or garbage address
+                        if meter_address is None or meter_address >= 32768:
                             logger.warning(f"Skipping meter {meter} with invalid or missing address: {meter_address}")
                             continue
                     except Exception as e:
                         logger.warning(f"Failed to validate meter {meter} address: {str(e)}")
                         continue
                     if self.all_fields:
-                        values["meters"][meter] = meter_data  # Use the full data we already read
+                        sanitized_data = {}
+                        for field, value in meter_data.items():
+                            if value is False or value is None:
+                                logger.warning(f"Invalid value '{value}' for meter field '{field}' on unit {self.unit}, meter {meter}")
+                                sanitized_data[field] = 0 if field.endswith("_scale") or "energy" in field or "power" in field else value
+                            else:
+                                sanitized_data[field] = value
+                        values["meters"][meter] = sanitized_data
                     else:
                         meter_data = {}
                         for field in self.meter_fields:
                             try:
-                                meter_data[field] = params.read(field)
+                                value = params.read(field)
+                                if value is False or value is None:
+                                    logger.warning(f"Invalid value '{value}' for meter field '{field}' on unit {self.unit}, meter {meter}")
+                                    meter_data[field] = 0
+                                else:
+                                    meter_data[field] = value
                             except Exception as e:
                                 logger.warning(f"Failed to read meter field '{field}' from unit {self.unit}, meter {meter}: {str(e)}")
+                                meter_data[field] = 0
                         scale_fields = {f"{field}_scale" for field in self.meter_fields if f"{field}_scale" in params.registers}
                         for scale_field in scale_fields:
                             try:
-                                meter_data[scale_field] = params.read(scale_field)
+                                value = params.read(scale_field)
+                                if value is False or value is None:
+                                    logger.warning(f"Invalid value '{value}' for meter scale field '{scale_field}' on unit {self.unit}, meter {meter}")
+                                    meter_data[scale_field] = 0
+                                else:
+                                    meter_data[scale_field] = value
                             except Exception as e:
                                 logger.warning(f"Failed to read meter scale field '{scale_field}' from unit {self.unit}, meter {meter}: {str(e)}")
+                                meter_data[scale_field] = 0
                         values["meters"][meter] = meter_data
 
             # Battery fields
@@ -144,19 +174,39 @@ class SolarEdgeMonitor:
                 for battery, params in self.inverter.batteries().items():
                     if self.all_fields:
                         battery_data = params.read_all()
+                        sanitized_data = {}
+                        for field, value in battery_data.items():
+                            if value is False or value is None:
+                                logger.warning(f"Invalid value '{value}' for battery field '{field}' on unit {self.unit}, battery {battery}")
+                                sanitized_data[field] = 0 if field.endswith("_scale") or "energy" in field or "power" in field else value
+                            else:
+                                sanitized_data[field] = value
+                        battery_data = sanitized_data
                     else:
                         battery_data = {}
                         for field in self.battery_fields:
                             try:
-                                battery_data[field] = params.read(field)
+                                value = params.read(field)
+                                if value is False or value is None:
+                                    logger.warning(f"Invalid value '{value}' for battery field '{field}' on unit {self.unit}, battery {battery}")
+                                    battery_data[field] = 0
+                                else:
+                                    battery_data[field] = value
                             except Exception as e:
                                 logger.warning(f"Failed to read battery field '{field}' from unit {self.unit}, battery {battery}: {str(e)}")
+                                battery_data[field] = 0
                         scale_fields = {f"{field}_scale" for field in self.battery_fields if f"{field}_scale" in params.registers}
                         for scale_field in scale_fields:
                             try:
-                                battery_data[scale_field] = params.read(scale_field)
+                                value = params.read(scale_field)
+                                if value is False or value is None:
+                                    logger.warning(f"Invalid value '{value}' for battery scale field '{scale_field}' on unit {self.unit}, battery {battery}")
+                                    battery_data[scale_field] = 0
+                                else:
+                                    battery_data[scale_field] = value
                             except Exception as e:
                                 logger.warning(f"Failed to read battery scale field '{scale_field}' from unit {self.unit}, battery {battery}: {str(e)}")
+                                battery_data[scale_field] = 0
                     values["batteries"][battery] = battery_data
             
             values["monitoring"] = {
@@ -208,7 +258,11 @@ def publish_to_mqtt_f(mqtt_client, base_topic, data):
                 if isinstance(value, dict):
                     publish_nested_dict(subtopic, value)
                 else:
-                    mqtt_client.publish(subtopic, str(value))
+                    # Ensure numeric values are published as strings with proper formatting
+                    if isinstance(value, (int, float)):
+                        mqtt_client.publish(subtopic, f"{value:.2f}" if isinstance(value, float) else str(value))
+                    else:
+                        mqtt_client.publish(subtopic, str(value))
                     logger.debug(f"Published {subtopic}: {value}")
         publish_nested_dict(base_topic, data)
         logger.debug(f"Successfully published flattened data under MQTT topic: {base_topic}")
